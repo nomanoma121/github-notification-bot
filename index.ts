@@ -11,10 +11,72 @@ const GITHUB_NOTIFICATIONS_URL = 'https://api.github.com/notifications';
 
 interface GitHubNotification {
   id: string;
+  reason: string;
+  unread: boolean;
+  updated_at: string;
   subject: {
     title: string;
     url: string;
+    type: string;
   };
+  repository: {
+    full_name: string;
+    html_url: string;
+    owner: {
+      avatar_url: string;
+    };
+  };
+}
+
+// APIのURLをブラウザで開けるURLに変換
+function convertApiUrlToHtmlUrl(apiUrl: string, repoHtmlUrl: string): string {
+  // https://api.github.com/repos/owner/repo/issues/1 -> https://github.com/owner/repo/issues/1
+  // https://api.github.com/repos/owner/repo/pulls/1 -> https://github.com/owner/repo/pull/1
+  const match = apiUrl.match(/repos\/[^/]+\/[^/]+\/(issues|pulls)\/(\d+)/);
+  if (match) {
+    const type = match[1] === 'pulls' ? 'pull' : 'issues';
+    return `${repoHtmlUrl}/${type}/${match[2]}`;
+  }
+  return repoHtmlUrl;
+}
+
+function getReasonLabel(reason: string): string {
+  const reasons: Record<string, string> = {
+    'assign': 'アサイン',
+    'author': '作成者',
+    'comment': 'コメント',
+    'ci_activity': 'CI',
+    'invitation': '招待',
+    'manual': '手動購読',
+    'mention': 'メンション',
+    'review_requested': 'レビュー依頼',
+    'security_alert': 'セキュリティ',
+    'state_change': '状態変更',
+    'subscribed': '購読中',
+    'team_mention': 'チームメンション',
+  };
+  return reasons[reason] || reason;
+}
+
+function getColorByType(type: string): number {
+  const colors: Record<string, number> = {
+    'Issue': 0x238636,   
+    'PullRequest': 0x8957e5, 
+    'Release': 0x1f6feb,  
+    'Discussion': 0xf78166, 
+  };
+  return colors[type] || 0x0099ff;
+}
+
+function getTypeLabel(type: string): string {
+  const types: Record<string, string> = {
+    'Issue': 'Issue',
+    'PullRequest': 'Pull Request',
+    'Release': 'Release',
+    'Discussion': 'Discussion',
+    'Commit': 'Commit',
+  };
+  return types[type] || type;
 }
 
 interface NotificationRecord {
@@ -56,14 +118,18 @@ client.once(Events.ClientReady, async (readyClient) => {
       for (const notification of notifications) {
         const threadId = notification.id;
         const title = notification.subject.title;
-        const url = notification.subject.url;
+        const apiUrl = notification.subject.url;
+        const type = notification.subject.type;
+        const reason = notification.reason;
+        const repoName = notification.repository.full_name;
+        const repoUrl = notification.repository.html_url;
+        const avatarUrl = notification.repository.owner.avatar_url;
+        const htmlUrl = convertApiUrlToHtmlUrl(apiUrl, repoUrl);
         const now = new Date().toISOString();
 
-        // 既存の通知をチェック
         const existingRecord = db.prepare('SELECT * FROM notifications WHERE thread_id = ?').get(threadId) as NotificationRecord | undefined;
 
         if (existingRecord) {
-          // 2時間以上経過した通知に対してリマインドを送る
           const lastRemindedAt = new Date(existingRecord.last_reminded_at);
           const twoHoursAgo = new Date(Date.now() - 2 * 60 * 60 * 1000);
           if (lastRemindedAt < twoHoursAgo) {
@@ -79,16 +145,26 @@ client.once(Events.ClientReady, async (readyClient) => {
             }
           }
         } else {
-          // 新規通知
           const messageId = v6();
 
           const embed = new EmbedBuilder()
-            .setColor(0x0099ff)
+            .setColor(getColorByType(type))
+            .setAuthor({ name: repoName, iconURL: avatarUrl, url: repoUrl })
             .setTitle(title)
-            .setURL(url)
-            .setDescription('New GitHub Notification');
+            .setURL(htmlUrl)
+            .addFields(
+              { name: 'タイプ', value: getTypeLabel(type), inline: true },
+              { name: '理由', value: getReasonLabel(reason), inline: true },
+            )
+            .setTimestamp(new Date(notification.updated_at))
+            .setFooter({ text: 'GitHub Notification' });
 
-          const button = new ButtonBuilder()
+          const linkButton = new ButtonBuilder()
+            .setLabel('GitHubで開く')
+            .setStyle(ButtonStyle.Link)
+            .setURL(htmlUrl);
+
+          const doneButton = new ButtonBuilder()
             .setCustomId(messageId)
             .setLabel('完了')
             .setStyle(ButtonStyle.Primary);
@@ -96,11 +172,14 @@ client.once(Events.ClientReady, async (readyClient) => {
           db.prepare(`
             INSERT INTO notifications (thread_id, message_id, title, url, last_reminded_at)
             VALUES (?, ?, ?, ?, ?)
-          `).run(threadId, messageId, title, url, now);
+          `).run(threadId, messageId, title, htmlUrl, now);
           console.log(`New notification stored with thread_id: ${threadId}`);
 
           if (channel?.isSendable()) {
-            await channel.send({ embeds: [embed], components: [new ActionRowBuilder<ButtonBuilder>().addComponents(button)] });
+            await channel.send({ 
+              embeds: [embed], 
+              components: [new ActionRowBuilder<ButtonBuilder>().addComponents(linkButton, doneButton)] 
+            });
           }
         }
       }
@@ -124,13 +203,13 @@ client.on(Events.InteractionCreate, async (interaction) => {
       }
     });
 
-    // ボタンを無効化して更新
     const disabledButton = new ButtonBuilder()
       .setCustomId(interaction.customId)
       .setLabel('完了済み ✅')
       .setStyle(ButtonStyle.Secondary)
       .setDisabled(true);
 
+    await interaction.message.react('✅');
     await interaction.update({
       components: [new ActionRowBuilder<ButtonBuilder>().addComponents(disabledButton)]
     });
