@@ -26,7 +26,7 @@ interface NotificationRecord {
 }
 
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
-const db = new Database('database.sqlite');
+const db = new Database('database.db');
 
 db.prepare(`
   CREATE TABLE IF NOT EXISTS notifications (
@@ -47,8 +47,8 @@ client.once(Events.ClientReady, async (readyClient) => {
     try {
       const res = await fetch(GITHUB_NOTIFICATIONS_URL, {
         headers: {
-          'Authorization': `token ${githubToken}`,
-          'Accept': 'application/vnd.github.v3+json'
+          'Authorization': `Bearer ${githubToken}`,
+          'Accept': 'application/vnd.github+json'
         }
       });
       const notifications = await res.json() as GitHubNotification[];
@@ -69,8 +69,8 @@ client.once(Events.ClientReady, async (readyClient) => {
           if (lastRemindedAt < twoHoursAgo) {
             const button = new ButtonBuilder()
               .setCustomId(existingRecord.message_id)
-              .setLabel('✅Done')
-              .setStyle(ButtonStyle.Primary);
+              .setLabel('完了')
+              .setStyle(ButtonStyle.Premium);
 
             if (channel?.isSendable()) {
               console.log(`Sending reminder for notification with thread_id: ${threadId}`);
@@ -90,7 +90,7 @@ client.once(Events.ClientReady, async (readyClient) => {
 
           const button = new ButtonBuilder()
             .setCustomId(messageId)
-            .setLabel('✅Done')
+            .setLabel('完了')
             .setStyle(ButtonStyle.Primary);
 
           db.prepare(`
@@ -114,9 +114,27 @@ client.on(Events.InteractionCreate, async (interaction) => {
 	if (!interaction.isButton()) return;
   try {
     db.prepare('DELETE FROM notifications WHERE message_id = ?').run(interaction.customId);
-    await interaction.message.react('✅');
+
+    // 通知を既読にする
+    await fetch(`${GITHUB_NOTIFICATIONS_URL}`, {
+      method: 'PUT',
+      headers: {
+        'Authorization': `Bearer ${githubToken}`,
+        'Accept': 'application/vnd.github+json'
+      }
+    });
+
+    // ボタンを無効化して更新
+    const disabledButton = new ButtonBuilder()
+      .setCustomId(interaction.customId)
+      .setLabel('完了済み ✅')
+      .setStyle(ButtonStyle.Secondary)
+      .setDisabled(true);
+
+    await interaction.update({
+      components: [new ActionRowBuilder<ButtonBuilder>().addComponents(disabledButton)]
+    });
     console.log(`Deleted notification with message_id: ${interaction.customId}`);
-    await interaction.deferUpdate();
   } catch (error) {
     console.error('Error deleting notification:', error);
     await interaction.deferUpdate();

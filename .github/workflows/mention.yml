@@ -1,0 +1,23 @@
+name: memtion
+
+on:
+  issue_comment:
+    types: [created]
+
+permissions:
+  issues: write
+
+jobs:
+  delayed-mention:
+    runs-on: ubuntu-latest
+    if: contains(github.event.comment.body, '/mention')
+    steps:
+      - name: Wait 10 seconds
+        run: sleep 10
+
+      - name: Mention user
+        uses: peter-evans/create-or-update-comment@v4
+        with:
+          issue-number: ${{ github.event.issue.number }}
+          body: |
+            @${{ github.event.comment.user.login }}
